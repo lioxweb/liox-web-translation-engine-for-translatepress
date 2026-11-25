@@ -24,6 +24,8 @@ This plugin adds Microsoft Azure Translator as an automatic translation engine f
 - TranslatePress
 - Microsoft Azure Translator resource
 
+**Tested up to:** WordPress 7.2 (tested on 7.2 RC3 with TranslatePress 3.4.1).
+
 ## Installation
 
 1. Download the plugin ZIP.
@@ -59,6 +61,10 @@ The Azure translation engine is used only when TranslatePress requests translati
 
 This allows existing translations created with another translation engine to remain unchanged while Azure Translator handles new untranslated content.
 
+## Azure Free Account
+
+After the 30-day trial or when you use your trial credit, upgrade your Azure subscription to pay-as-you-go to keep using Azure. Your Translator resource can stay on the F0 (Free) tier where available. See [Azure free account information](https://azure.microsoft.com/en-us/pricing/purchase-options/azure-account/) and [Translator pricing](https://azure.microsoft.com/en-us/pricing/details/translator/).
+
 ## External Service
 
 This plugin connects to the Microsoft Azure Translator API.
@@ -84,6 +90,15 @@ If an API key is accidentally exposed, regenerate it immediately from the Micros
 ## Repository
 
 https://github.com/lioxweb/liox-web-translation-engine-for-translatepress
+
+## Changelog
+
+### 1.1.5
+
+- Keep tracking Azure character usage when the monthly hard limit is disabled.
+- Accept whole-number hard limits in the settings and stop further batches after Azure errors.
+- Handle invalid translation and credential-test responses without exposing API keys in diagnostics.
+- Prevent requests carrying Azure credentials from following HTTP redirects.
 
 ## License
 

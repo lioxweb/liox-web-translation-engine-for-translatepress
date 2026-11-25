@@ -3,7 +3,7 @@
  * Plugin Name: LioX Web Translation Engine with Microsoft Azure Translator for TranslatePress
  * Plugin URI: https://github.com/lioxweb/liox-web-translation-engine-for-translatepress
  * Description: Adds Microsoft Azure Translator as an automatic translation engine for TranslatePress.
- * Version: 1.1.4
+ * Version: 1.1.5
  * Author: LioX Web
  * Author URI: https://lioxweb.com/
  * Text Domain: liox-web-translation-engine-for-translatepress
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'LWX_AZURE_TRANSLATOR_VERSION', '1.1.4' );
+define( 'LWX_AZURE_TRANSLATOR_VERSION', '1.1.5' );
 define( 'LWX_AZURE_TRANSLATOR_DIR', plugin_dir_path( __FILE__ ) );
 define( 'LWX_AZURE_ENGINE', 'liox_azure_translator' );
 
@@ -230,7 +230,7 @@ function lwx_azure_get_monthly_usage() {
  * This prevents parallel WordPress requests from stepping over the configured hard limit.
  *
  * @param int $characters Number of source characters about to be sent.
- * @param int $limit      Monthly hard limit. Zero disables the plugin cap.
+ * @param int $limit      Monthly hard limit. Zero keeps counting without a cap.
  * @return bool True when the request is allowed and the characters were reserved.
  */
 function lwx_azure_reserve_monthly_usage( $characters, $limit ) {
@@ -239,11 +239,11 @@ function lwx_azure_reserve_monthly_usage( $characters, $limit ) {
     $characters = max( 0, (int) $characters );
     $limit      = max( 0, (int) $limit );
 
-    if ( 0 === $characters || 0 === $limit ) {
+    if ( 0 === $characters ) {
         return true;
     }
 
-    if ( $characters > $limit ) {
+    if ( 0 < $limit && $characters > $limit ) {
         return false;
     }
 
@@ -259,9 +259,10 @@ function lwx_azure_reserve_monthly_usage( $characters, $limit ) {
             "UPDATE {$wpdb->options}
              SET option_value = CAST(option_value AS UNSIGNED) + %d
              WHERE option_name = %s
-               AND CAST(option_value AS UNSIGNED) + %d <= %d",
+               AND ( %d = 0 OR CAST(option_value AS UNSIGNED) + %d <= %d )",
             $characters,
             $option_name,
+            $limit,
             $characters,
             $limit
         )
@@ -385,7 +386,7 @@ function lwx_azure_render_settings( $mt_settings ) {
             <input
                 type="number"
                 min="0"
-                step="1000"
+                step="1"
                 class="trp-text-input"
                 name="trp_machine_translation_settings[lwx-azure-monthly-limit]"
                 value="<?php echo esc_attr( $monthly_limit ); ?>"

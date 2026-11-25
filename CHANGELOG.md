@@ -2,6 +2,20 @@
 
 All notable changes to **LioX Web Azure Translator for TranslatePress** are documented in this file.
 
+## [1.1.5] - 2026-11-26
+
+### Fixed
+
+- Keep tracking Azure character usage when the monthly hard limit is disabled.
+- Accept whole-number limits and stop sending further batches after Azure errors.
+- Validate translation and credential-test responses and keep API keys out of diagnostics.
+- Prevent requests carrying Azure credentials from following HTTP redirects.
+
+### Compatibility
+
+- Confirmed compatibility with WordPress 7.2 RC3 and TranslatePress 3.4.1.
+- Added setup guidance for Azure free accounts and F0 Translator resources.
+
 ## [1.1.4] - 2026-09-11
 
 ### Changed

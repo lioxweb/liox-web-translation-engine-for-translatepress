@@ -13,6 +13,7 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
     const API_VERSION       = '3.0';
     const MAX_REQUEST_ITEMS = 25;
     const MAX_REQUEST_CHARS = 4800; // Azure limit is 5000; keep a small safety margin.
+    const CREDENTIAL_TEST_TEXT = 'TranslatePress test';
 
     /**
      * Translate an array of strings while preserving TranslatePress array keys.
@@ -31,7 +32,8 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
             return array();
         }
 
-        if ( get_transient( 'lwx_azure_translation_throttle' ) ) {
+        $throttle_key = 'lwx_azure_translation_throttle';
+        if ( get_transient( $throttle_key ) ) {
             return array();
         }
 
@@ -55,6 +57,10 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
                     $translated += $this->translate_batch_and_count( $pending, $source, $target );
                     $pending       = array();
                     $pending_chars = 0;
+
+                    if ( $this->machine_translator_logger->quota_exceeded() || get_transient( $throttle_key ) ) {
+                        break;
+                    }
                 }
 
                 $long_translation = $this->translate_long_string( $string, $source, $target );
@@ -63,7 +69,7 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
                     $this->machine_translator_logger->count_towards_quota( array( $string ) );
                 }
 
-                if ( $this->machine_translator_logger->quota_exceeded() ) {
+                if ( $this->machine_translator_logger->quota_exceeded() || get_transient( $throttle_key ) ) {
                     break;
                 }
                 continue;
@@ -77,7 +83,7 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
                 $pending       = array();
                 $pending_chars = 0;
 
-                if ( $this->machine_translator_logger->quota_exceeded() ) {
+                if ( $this->machine_translator_logger->quota_exceeded() || get_transient( $throttle_key ) ) {
                     break;
                 }
             }
@@ -203,30 +209,45 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
             return $return;
         }
 
-        $body = json_decode( wp_remote_retrieve_body( $response ), true );
-        if ( ! is_array( $body ) || count( $body ) !== count( $batch ) ) {
+        $translations = $this->parse_translations( wp_remote_retrieve_body( $response ), $batch );
+        if ( null === $translations ) {
             return $return;
+        }
+
+        $this->cache_validation_result( true );
+        $return['success']      = true;
+        $return['translations'] = $translations;
+        return $return;
+    }
+
+    /**
+     * Decode Azure translations and preserve the original batch keys.
+     *
+     * @param string $body  Raw response body.
+     * @param array  $batch Keyed strings.
+     * @return array|null Keyed translations, or null for an invalid response.
+     */
+    private function parse_translations( $body, $batch ) {
+        $items = json_decode( $body, true );
+        if ( ! is_array( $items ) || count( $items ) !== count( $batch ) ) {
+            return null;
         }
 
         $keys         = array_keys( $batch );
         $translations = array();
-
-        foreach ( $body as $index => $item ) {
-            if ( ! isset( $keys[ $index ] ) || ! isset( $item['translations'][0] ) || ! array_key_exists( 'text', $item['translations'][0] ) ) {
-                return $return;
+        foreach ( $items as $index => $item ) {
+            $text = $item['translations'][0]['text'] ?? null;
+            if ( ! isset( $keys[ $index ] ) || ! is_string( $text ) ) {
+                return null;
             }
-
-            $text = (string) $item['translations'][0]['text'];
-            if ( '' === $text && '' !== (string) $batch[ $keys[ $index ] ] ) {
-                return $return;
+            $key = $keys[ $index ];
+            if ( '' === $text && '' !== (string) $batch[ $key ] ) {
+                return null;
             }
-
-            $translations[ $keys[ $index ] ] = $text;
+            $translations[ $key ] = $text;
         }
 
-        $return['success']      = true;
-        $return['translations'] = $translations;
-        return $return;
+        return $translations;
     }
 
     /**
@@ -244,7 +265,8 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
         }
 
         $monthly_limit = $this->get_monthly_limit();
-        if ( $monthly_limit > 0 && ! lwx_azure_reserve_monthly_usage( $characters, $monthly_limit ) ) {
+        $reserved      = lwx_azure_reserve_monthly_usage( $characters, $monthly_limit );
+        if ( $monthly_limit > 0 && ! $reserved ) {
             $used = lwx_azure_get_monthly_usage();
 
             return new WP_Error(
@@ -286,19 +308,23 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
         $response = wp_remote_post(
             $url,
             array(
-                'timeout' => 45,
-                'headers' => $headers,
-                'body'    => wp_json_encode( $body ),
+                'timeout'     => 45,
+                'redirection' => 0,
+                'headers'     => $headers,
+                'body'        => wp_json_encode( $body ),
             )
         );
 
-        if ( ! is_wp_error( $response ) ) {
-            $code = (int) wp_remote_retrieve_response_code( $response );
-            if ( 200 === $code ) {
-                $this->cache_validation_result( true, '', 43200 );
-            } elseif ( in_array( $code, array( 401, 403 ), true ) ) {
-                $this->cache_validation_result( false, $this->get_azure_error_message( $code, wp_remote_retrieve_body( $response ) ), 300 );
-            }
+        if ( is_wp_error( $response ) ) {
+            return new WP_Error(
+                'lwx_azure_connection_failed',
+                __( 'Could not reach Azure Translator. Check the endpoint and try again.', 'liox-web-translation-engine-for-translatepress' )
+            );
+        }
+
+        $code = (int) wp_remote_retrieve_response_code( $response );
+        if ( in_array( $code, array( 401, 403 ), true ) ) {
+            $this->cache_validation_result( false, $this->get_azure_error_message( $code ), 300 );
         }
 
         return $response;
@@ -310,7 +336,7 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
      * @return array|WP_Error
      */
     public function test_request() {
-        return $this->send_request( array( 'TranslatePress test' ), 'en', 'fr' );
+        return $this->send_request( array( self::CREDENTIAL_TEST_TEXT ), 'en', 'fr' );
     }
 
     /**
@@ -442,12 +468,10 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
         $response = $this->test_request();
 
         if ( is_wp_error( $response ) ) {
-            $message = sprintf(
-                /* translators: %s: WordPress HTTP error. */
-                __( 'Azure connection error: %s', 'liox-web-translation-engine-for-translatepress' ),
-                $response->get_error_message()
-            );
-            $this->cache_validation_result( false, $message, 300 );
+            $message = $response->get_error_message();
+            if ( 'lwx_azure_monthly_limit_reached' !== $response->get_error_code() ) {
+                $this->cache_validation_result( false, $message, 300 );
+            }
             $this->correct_api_key = array(
                 'message' => $message,
                 'error'   => true,
@@ -456,13 +480,13 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
         }
 
         $code = (int) wp_remote_retrieve_response_code( $response );
-        if ( 200 === $code ) {
-            $this->cache_validation_result( true, '', 43200 );
+        if ( 200 === $code && null !== $this->parse_translations( wp_remote_retrieve_body( $response ), array( self::CREDENTIAL_TEST_TEXT ) ) ) {
+            $this->cache_validation_result( true );
             $this->correct_api_key = array( 'message' => '', 'error' => false );
             return $this->correct_api_key;
         }
 
-        $message = $this->get_azure_error_message( $code, wp_remote_retrieve_body( $response ) );
+        $message = $this->get_azure_error_message( $code );
         $this->cache_validation_result( false, $message, 300 );
         $this->correct_api_key = array(
             'message' => $message,
@@ -705,10 +729,16 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
                 'message' => $response->get_error_message(),
             );
         } else {
-            $logged_response = array(
-                'code' => (int) wp_remote_retrieve_response_code( $response ),
-                'body' => wp_remote_retrieve_body( $response ),
-            );
+            $code            = (int) wp_remote_retrieve_response_code( $response );
+            $logged_response = array( 'code' => $code );
+            if ( 200 !== $code ) {
+                $logged_response['message'] = $this->get_azure_error_message( $code );
+            }
+        }
+
+        $api_key = $this->get_api_key();
+        if ( $api_key ) {
+            $batch = str_replace( $api_key, '[redacted]', $batch );
         }
 
         $this->machine_translator_logger->log(
@@ -735,18 +765,14 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
     /**
      * Human-friendly Azure error for TranslatePress admin.
      *
-     * @param int    $code HTTP status.
-     * @param string $body Raw response body.
+     * @param int $code HTTP status.
      * @return string
      */
-    private function get_azure_error_message( $code, $body ) {
-        $remote = '';
-        $json   = json_decode( (string) $body, true );
-        if ( is_array( $json ) && ! empty( $json['error']['message'] ) ) {
-            $remote = sanitize_text_field( (string) $json['error']['message'] );
-        }
-
+    private function get_azure_error_message( $code ) {
         switch ( (int) $code ) {
+            case 200:
+                $message = __( 'Azure Translator returned an invalid response. Check the endpoint and try again.', 'liox-web-translation-engine-for-translatepress' );
+                break;
             case 400:
                 $message = __( 'Azure rejected the request. Check the endpoint, region and language configuration.', 'liox-web-translation-engine-for-translatepress' );
                 break;
@@ -767,10 +793,6 @@ class LWX_Azure_Machine_Translator extends TRP_Machine_Translator {
                     (int) $code
                 );
                 break;
-        }
-
-        if ( '' !== $remote ) {
-            $message .= ' ' . $remote;
         }
 
         return $message;
